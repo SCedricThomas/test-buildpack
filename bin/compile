@@ -1,0 +1,18 @@
+#!/bin/bash
+# usage: bin/compile <build-dir> <cache-dir> <env-dir>
+
+set -eo pipefail
+
+if [ -n "$BUILDPACK_DEBUG" ]; then
+    set -x
+fi
+[ "$BUILDPACK_XTRACE" ] && set -o xtrace
+
+mkdir -p "$1" "$2"
+build=$(cd "$1/" && pwd)
+cache=$(cd "$2/" && pwd)
+env_dir="${3}"
+buildpack=$(cd "$(dirname $0)/.." && pwd)
+
+apt-get -y install skopeo
+skopeo copy docker://busybox:latest docker-archive:archive-file.tar:busybox:latest
