@@ -1,9 +1,11 @@
 #!/bin/bash
 
-BUILD_DIR=${1:-}
+exit 0
 
-if [ -f "${BUILD_DIR}/Dockerfile" ]; then
-    exit 0
-fi
+# BUILD_DIR=${1:-}
 
-exit 1
+# if [ -f "${BUILD_DIR}/Dockerfile" ]; then
+#     exit 0
+# fi
+
+# exit 1
