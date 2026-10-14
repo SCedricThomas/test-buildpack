@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+buildpack_dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+exec python3 "$buildpack_dir/lib/build.py" "$@"

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -f "${1:?usage: detect BUILD_DIR}/Dockerfile" ]]; then
+  echo 'Dockerfile (image runtime)'
+else
+  echo no
+  exit 1
+fi

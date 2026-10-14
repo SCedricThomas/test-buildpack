@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cat <<'YAML'
+---
+default_process_types:
+  web: exec /app/.docker-runtime/launch
+YAML

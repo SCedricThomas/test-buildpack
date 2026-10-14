@@ -1,0 +1,13 @@
+{
+  "crane": {
+    "version": "v0.22.1",
+    "url": "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz",
+    "sha256": "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0",
+    "member": "crane"
+  },
+  "proot": {
+    "version": "5.4.1-32-g25dc6a3-25dc6a31",
+    "url": "https://proot.gitlab.io/proot/bin/proot",
+    "sha256": "90375de3807212b8f948ff98ed66020f7c9cf7ea447c8734f1af02a2643c8d26"
+  }
+}
