@@ -50,13 +50,20 @@ restrictions. No PRoot binary is downloaded or packaged.
 | `COPY` | Literal relative files/directories, multiple sources; no source symlinks/globs |
 | `ADD` | Local files/directories like COPY, local tar extraction (plain/gzip/bzip2/xz), HTTP(S) file downloads |
 | `WORKDIR`, `ENV`, `ARG` | Paths and build environment; `ENV` uses KEY=value syntax |
-| `CMD`, `ENTRYPOINT` | JSON exec form only; native ELF executable at absolute image path, or `java` |
+| `CMD` | JSON exec form or a simple command with quoted arguments; native ELF executable at absolute image path, or `java` |
+| `ENTRYPOINT` | JSON exec form only; native ELF executable at absolute image path, or `java` |
 | `EXPOSE`, `LABEL` | Validated metadata only |
 
 A simple shell-style `RUN go build ...` is tokenized, **not passed to a shell**.
 Quotes and `$NAME` substitutions are supported in RUN words. JSON arrays retain
 literal arguments. Shell operators, pipes, redirections, command substitution,
 globs and scripts are unsupported. Use separate RUN instructions.
+
+`CMD /go/bin/sample-go-gin` is supported and runs the executable directly.
+Arguments can be quoted, for example `CMD java -cp /app/out Main "hello world"`.
+Non-JSON `CMD` does not invoke a shell: variable expansion, operators such as
+`&&` and `|`, redirections, globs, and scripts remain unsupported. JSON `CMD`
+continues to support literal arguments and default arguments for `ENTRYPOINT`.
 
 `USER`, multi-stage builds, `scratch`, stage aliases, instruction flags,
 `VOLUME`, `ONBUILD`, `SHELL`, `HEALTHCHECK`, and `STOPSIGNAL` are rejected.

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from dockerfile import Ignore, NAME, command, copy, parse, words
+from dockerfile import Ignore, NAME, command, copy, parse, startup_command, words
 from image import BuildError, guest_path, install_tools, pull, remove
 
 
@@ -132,7 +132,7 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
                 if completed.returncode:
                     raise BuildError(f"RUN failed with exit code {completed.returncode}; image tools must be compatible with the Scalingo stack")
             elif op == "CMD":
-                cmd, explicit_cmd = command(value), True
+                cmd, explicit_cmd = startup_command(value), True
             elif op == "ENTRYPOINT":
                 entrypoint = command(value)
                 if not explicit_cmd:

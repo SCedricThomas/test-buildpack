@@ -8,8 +8,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from build import argument, native_command, procfile, relocate_links
-from dockerfile import Ignore, command, copy, parse, words
+from build import argument, build, native_command, procfile, relocate_links
+from dockerfile import Ignore, command, copy, parse, startup_command, words
 from image import BuildError, guest_path, unpack
 
 
@@ -183,10 +183,46 @@ class BuildpackTests(unittest.TestCase):
         self.assertEqual(native_command('["javac", "$LITERAL"]', {}), ['javac', '$LITERAL'])
 
     def test_native_runtime_rejects_shell_and_user(self):
-        for text in ['FROM alpine\nCMD echo hello\n', 'FROM alpine\nUSER 1000\n']:
+        for text in ['FROM alpine\nCMD /app/server && echo hello\n', 'FROM alpine\nUSER 1000\n',
+                     'FROM alpine\nENTRYPOINT /app/server\n']:
             (self.source / 'Dockerfile').write_text(text)
             with self.assertRaises(BuildError):
                 parse(self.source / 'Dockerfile')
+
+    def test_simple_cmd_quoting_and_unsupported_syntax(self):
+        self.assertEqual(startup_command('/go/bin/sample-go-gin'), ['/go/bin/sample-go-gin'])
+        self.assertEqual(startup_command('java Main "hello world" \'\' escaped\\ space'),
+                         ['java', 'Main', 'hello world', '', 'escaped space'])
+        self.assertEqual(startup_command('["/app/server", "$PORT", "a|b"]'),
+                         ['/app/server', '$PORT', 'a|b'])
+        for value in ['/app/server $PORT', '/app/server > log', '/app/server | cat',
+                      '/app/server *.txt', '/app/server $(pwd)', '"unfinished', '""']:
+            with self.subTest(value=value), self.assertRaises(BuildError):
+                startup_command(value)
+
+    def test_build_simple_and_json_cmd(self):
+        cases = [
+            ('CMD /go/bin/sample-go-gin', ['/go/bin/sample-go-gin']),
+            ('CMD ["/go/bin/sample-go-gin"]', ['/go/bin/sample-go-gin']),
+            ('ENTRYPOINT ["/go/bin/sample-go-gin"]\nCMD ["--port", "8080"]',
+             ['/go/bin/sample-go-gin', '--port', '8080']),
+            ('CMD /app/old\nCMD /go/bin/sample-go-gin "hello world"',
+             ['/go/bin/sample-go-gin', 'hello world']),
+        ]
+        for index, (instructions, expected) in enumerate(cases):
+            with self.subTest(instructions=instructions):
+                runtime = self.directory / f'runtime-{index}'
+                runtime.mkdir()
+                (runtime / 'rootfs').mkdir()
+                (self.source / 'Dockerfile').write_text('FROM example\n' + instructions + '\n')
+                with patch('build.pull', return_value=('example@sha256:test', {})), \
+                     patch('build.subprocess.run') as run:
+                    build(self.source, runtime, self.directory, {'crane': 'crane'},
+                          parse(self.source / 'Dockerfile'), {}, None)
+                config = json.loads((runtime / 'config.json').read_text())
+                self.assertEqual(config['argv'], expected)
+                # Startup is validated but never executed during compilation.
+                run.assert_called_once()
 
     def test_native_symlinks_survive_artifact_relocation(self):
         root = self.directory / 'rootfs'

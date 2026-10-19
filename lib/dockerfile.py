@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import shutil
 import tarfile
 import tempfile
@@ -68,6 +69,20 @@ def command(value, shell=None):
     return (shell or ["/bin/sh", "-c"]) + [value]
 
 
+def startup_command(value):
+    if value.startswith("["):
+        return command(value)
+    if re.search(r"[;&|<>`\n*?\[\](){}$]", value):
+        raise BuildError("CMD supports a simple command with quoted arguments; shell operators, variable expansion and globs are unsupported")
+    try:
+        argv = shlex.split(value)
+    except ValueError as exc:
+        raise BuildError(f"invalid CMD: {exc}") from exc
+    if not argv or not argv[0] or any("\0" in arg for arg in argv):
+        raise BuildError("CMD requires a non-empty executable and valid arguments")
+    return argv
+
+
 def parse(path):
     result, pending, start = [], "", 0
     for number, line in enumerate(path.read_text().splitlines(), 1):
@@ -88,14 +103,14 @@ def parse(path):
         op, value = match[1].upper(), match[2]
         if op not in OPS:
             raise BuildError(f"line {start}: {op} is unsupported")
-        if op in {"CMD", "ENTRYPOINT"} and not value.startswith("["):
+        if op == "ENTRYPOINT" and not value.startswith("["):
             raise BuildError(f"line {start}: native runner requires JSON exec form for {op}")
         if op == "USER":
             raise BuildError(f"line {start}: USER is unsupported; commands run as Scalingo user")
         if value.startswith("--") or (not value.startswith("[") and "<<" in value):
             raise BuildError(f"line {start}: instruction flags and heredocs are unsupported")
         if op in {"RUN", "CMD", "ENTRYPOINT"}:
-            argv = command(value)
+            argv = startup_command(value) if op == "CMD" else command(value)
             if op == "RUN" and not argv:
                 raise BuildError(f"line {start}: RUN needs a command")
         result.append((start, op, value))
