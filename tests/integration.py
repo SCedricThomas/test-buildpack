@@ -29,10 +29,11 @@ def check(language, cache, runtime_image):
         docker('run', '--rm', *RESTRICTIONS,
                '-v', str(ROOT) + ':/buildpack:ro', '-v', volume + ':/artifacts', '-v', cache + ':/cache',
                '--entrypoint', 'python3', STACK, '/buildpack/tests/build_sample.py', language)
+        startup = ['--shell', 'scalingo-dockerfile-sample'] if language == 'go' else []
         container = docker('run', '--detach', *RESTRICTIONS, '--env', 'PORT=9090',
                            '--publish', '127.0.0.1::9090',
                            '--mount', f'type=volume,src={volume},dst=/app,volume-subpath=app',
-                           '--entrypoint', '/app/.docker-runtime/launch', runtime_image, capture=True).stdout.strip()
+                           '--entrypoint', '/app/.docker-runtime/launch', runtime_image, *startup, capture=True).stdout.strip()
         address = docker('port', container, '9090/tcp', capture=True).stdout.strip()
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         deadline = time.monotonic() + 60

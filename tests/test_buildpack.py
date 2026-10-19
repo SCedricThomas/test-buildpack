@@ -202,6 +202,7 @@ class BuildpackTests(unittest.TestCase):
     def test_build_simple_and_json_cmd(self):
         cases = [
             ('CMD /go/bin/sample-go-gin', ['/go/bin/sample-go-gin']),
+            ('CMD sample-go-gin', ['sample-go-gin']),
             ('CMD ["/go/bin/sample-go-gin"]', ['/go/bin/sample-go-gin']),
             ('ENTRYPOINT ["/go/bin/sample-go-gin"]\nCMD ["--port", "8080"]',
              ['/go/bin/sample-go-gin', '--port', '8080']),

@@ -16,7 +16,7 @@ begin
              elsif ARGV[0] == '--' && ARGV.length > 1
                ARGV.drop(1)
              else
-               raise 'Usage: launch [--shell SIMPLE_COMMAND | -- EXECUTABLE ARG...]'
+               raise 'Usage: launch [--shell COMMAND | -- EXECUTABLE ARG...]'
              end
   env, command, cwd = Native.prepare(File.join(directory, 'rootfs'), config, build: build, override: override)
   %w[HOME TMPDIR GOCACHE].each { |key| FileUtils.mkdir_p(env.fetch(key)) }

@@ -161,8 +161,6 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
     argv = entrypoint + cmd
     if not argv or not argv[0]:
         raise BuildError("no startup command: supply CMD or ENTRYPOINT")
-    if argv[0] != "java" and not argv[0].startswith("/"):
-        raise BuildError("startup requires java or an absolute image path to a native executable")
     metadata = {"image": pinned, "argv": argv, "env": env, "workdir": cwd, "mode": "native"}
     (runtime / "config.json").write_text(json.dumps(metadata, indent=2) + "\n")
     # Validate startup before publishing; do not execute the application.

@@ -14,6 +14,7 @@ shutil.copytree(Path('/buildpack/examples') / sys.argv[1], source)
 if sys.argv[1] == 'go':
     # Exercise the deployment that motivated general RUN support, including
     # versioned tool installation, local installation and shell expansion.
+    (source / 'Procfile').write_text('web: scalingo-dockerfile-sample\n')
     dockerfile = source / 'Dockerfile'
     dockerfile.write_text(dockerfile.read_text().replace(
         'RUN go build -trimpath -o /app/server .',

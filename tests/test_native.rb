@@ -96,18 +96,43 @@ class NativeTest < Minitest::Test
     assert_equal '/bin/echo literal', cmd.last
   end
 
-  def test_runtime_scripts_and_shell_syntax_rejected
-    File.write(File.join(@root, 'app/server'), "#!/bin/sh\necho hello")
-    assert_raises(RuntimeError) { Native.prepare(@root, @config) }
-    ['java Main && echo done', 'java $FLAGS Main', 'java *.java'].each do |text|
-      assert_raises(RuntimeError) { Native.simple(text, {}) }
-    end
+  def test_runtime_procfile_resolves_image_path_and_runtime_environment
+    FileUtils.mkdir_p(File.join(@root, 'go/bin'))
+    script = File.join(@root, 'go/bin/sample-go-gin')
+    File.write(script, "#!/bin/sh\nprintf '%s' \"$PORT\"\n")
+    File.chmod(0755, script)
+    @config['env'] = {'PATH' => '/go/bin:/usr/bin:/bin', 'PORT' => '8080'}
+    old_port = ENV['PORT']
+    old_path = ENV['PATH']
+    ENV['PORT'] = '9090'
+    ENV['PATH'] = '/not/the/image/path'
+    env, cmd, cwd = Native.prepare(@root, @config, override: 'sample-go-gin')
+    assert_equal [script, 'sample-go-gin'], cmd.first
+    output, status = Open3.capture2(env, *cmd, chdir: cwd, unsetenv_others: true)
+    assert status.success?
+    assert_equal '9090', output
+    @config['argv'] = ['sample-go-gin']
+    _, cmd, = Native.prepare(@root, @config)
+    assert_equal script, cmd.first.first
+  ensure
+    ENV['PORT'] = old_port
+    ENV['PATH'] = old_path
   end
 
-  def test_native_shell_entrypoint_rejected
-    elf('/bin/sh')
-    @config['argv'] = ['/bin/sh', '-c', 'echo hello']
-    assert_raises(RuntimeError) { Native.prepare(@root, @config) }
+  def test_runtime_shell_override_and_relative_script
+    FileUtils.mkdir_p(File.join(@root, 'bin'))
+    FileUtils.cp('/bin/sh', File.join(@root, 'bin/sh'))
+    File.write(File.join(@root, 'app/server'), "#!/bin/sh\nprintf 'started'\n")
+    @config['argv'] = ['./server']
+    env, cmd, cwd = Native.prepare(@root, @config)
+    output, status = Open3.capture2(env, *cmd, chdir: cwd, unsetenv_others: true)
+    assert status.success?
+    assert_equal 'started', output
+    env, cmd, cwd = Native.prepare(@root, @config, override: './server | cat; exit 7')
+    output, status = Open3.capture2(env, *cmd, chdir: cwd, unsetenv_others: true)
+    assert_equal 7, status.exitstatus
+    assert_equal 'started', output
+    assert_equal ['/bin/sh', '-c', 'exec app'], Native.simple('exec app', {})
   end
 
   def test_guest_symlinks_cannot_resolve_outside_image

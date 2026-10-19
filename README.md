@@ -48,8 +48,8 @@ restrictions. No PRoot binary is downloaded or packaged.
 | `COPY` | Literal relative files/directories, multiple sources; no source symlinks/globs |
 | `ADD` | Local files/directories like COPY, local tar extraction (plain/gzip/bzip2/xz), HTTP(S) file downloads |
 | `WORKDIR`, `ENV`, `ARG` | Paths and build environment; `ENV` uses KEY=value syntax |
-| `CMD` | JSON exec form or a simple command with quoted arguments; native ELF executable at absolute image path, or `java` |
-| `ENTRYPOINT` | JSON exec form only; native ELF executable at absolute image path, or `java` |
+| `CMD` | JSON exec form or a simple command with quoted arguments; resolves absolute paths, relative paths and image PATH |
+| `ENTRYPOINT` | JSON exec form; native commands, shells and executable scripts |
 | `EXPOSE`, `LABEL` | Validated metadata only |
 
 Simple `RUN` commands execute directly, with quoted arguments and path
@@ -80,15 +80,18 @@ support does not enable root package installation or emulate a Docker rootfs.
 `CMD /go/bin/sample-go-gin` is supported and runs the executable directly.
 Arguments can be quoted, for example `CMD java -cp /app/out Main "hello world"`.
 Non-JSON `CMD` does not invoke a shell: variable expansion, operators such as
-`&&` and `|`, redirections, globs, and scripts remain unsupported. JSON `CMD`
-continues to support literal arguments and default arguments for `ENTRYPOINT`.
+`&&` and `|`, redirections and globs require an explicit shell in JSON form,
+for example `CMD ["/bin/sh", "-c", "exec sample-go-gin"]`. Executable scripts
+with compatible shebang interpreters are supported. JSON `CMD` also supports
+literal arguments and default arguments for `ENTRYPOINT`.
 
 `USER`, multi-stage builds, `scratch`, stage aliases, instruction flags,
 `VOLUME`, `ONBUILD`, `SHELL`, `HEALTHCHECK`, and `STOPSIGNAL` are rejected.
 Base images with non-root USER declarations, volumes, ONBUILD or custom stop
 signals are rejected. Root defaults do not confer root privileges: all commands
-run as Scalingo's user. Inherited script entrypoints must be explicitly cleared
-with `ENTRYPOINT []` (see Java sample). Image health checks are not executed.
+run as Scalingo's user. Inherited entrypoints run natively and must be compatible
+with the stack and relocated filesystem; use `ENTRYPOINT []` to clear one
+(see Java sample). Image health checks are not executed.
 
 `ADD` supports shell and JSON forms and the same local path and `.dockerignore`
 restrictions as `COPY`. Local archives are detected by content and extracted into
@@ -108,9 +111,10 @@ entries are adapted too. It resolves `WORKDIR` under the same filesystem.
 Known path variables (`HOME`, `JAVA_HOME`, `GOROOT`, `GOPATH`, `GOCACHE`,
 `GOBIN`, `GOMODCACHE`, `CARGO_HOME`, `RUSTUP_HOME`, `CARGO_TARGET_DIR`, `TMPDIR`) are
 relocated. These variables must contain a single absolute image path.
-`PATH` starts with the selected image toolchains. During builds, relocated image
-PATH directories follow; `/usr/bin:/bin` from the Scalingo stack are fallbacks.
-Runtime PATH retains only the selected toolchains and stack directories.
+`PATH` starts with the selected image toolchains, followed by relocated image
+PATH directories and `/usr/bin:/bin` from the Scalingo stack as fallbacks. Build
+and runtime use the same resolution, so a Procfile such as `web: sample-go-gin`
+finds an installed binary through the image PATH (for example `/go/bin`).
 
 This does **not** rewrite paths embedded in binaries, source code or config
 files. An application that opens `/app/data` internally still opens the outer
@@ -137,16 +141,19 @@ outer environment. Application variables are not passed to RUN automatically.
 - `DOCKER_BUILD_ARGS`: JSON object of string overrides for declared ARGs.
 - `DOCKER_AUTH_CONFIG`: Docker credential JSON with an `auths` object; no helpers.
 
-A Procfile can specify simple commands such as:
+A Procfile overrides the Dockerfile startup command and can specify commands such as:
 
 ```procfile
 web: java -cp /app/out Main
 worker: /app/worker
 ```
 
-Commands bypass the image entrypoint and use the same native adapter. Shell
-operators, expansion and scripts are unsupported. One-off native commands can
-use `/app/.docker-runtime/launch -- /app/worker`; a guest shell is not provided.
+Commands bypass the image entrypoint and use the same native adapter. Simple
+commands resolve through image PATH or relative to WORKDIR. Shell expressions
+and environment expansion run through the image `/bin/sh`; scripts and shells
+have the same path and native-library limitations described above. One-off
+commands can use `/app/.docker-runtime/launch -- /app/worker` or
+`/app/.docker-runtime/launch --shell 'exec sample-go-gin'`.
 
 ## Size, caching and reproducibility
 
