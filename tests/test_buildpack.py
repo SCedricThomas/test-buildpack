@@ -175,10 +175,9 @@ class BuildpackTests(unittest.TestCase):
         self.assertEqual(argument('VERSION=old', {}, {'VERSION': 'new'}, {}), ('VERSION', 'new'))
         self.assertEqual(argument('VERSION', {}, {}, {'VERSION': 'global'}), ('VERSION', 'global'))
 
-    def test_native_run_rejects_shell_and_preserves_exec_arguments(self):
-        for text in ['apt-get update && apt-get install gcc', 'go build > output', 'go build $(pwd)', 'cargo build; echo done']:
-            with self.assertRaises(BuildError):
-                native_command(text, {})
+    def test_native_run_supports_shell_and_preserves_exec_arguments(self):
+        for text in ['apt-get update && apt-get install gcc', 'go build > output', 'go build $(pwd)', 'cargo build; echo done', 'cd src', 'FOO=bar go install', 'go install $PACKAGE']:
+            self.assertEqual(native_command(text, {}), ['/bin/sh', '-c', text])
         self.assertEqual(native_command('go build -o /app/server .', {}), ['go', 'build', '-o', '/app/server', '.'])
         self.assertEqual(native_command('["javac", "$LITERAL"]', {}), ['javac', '$LITERAL'])
 

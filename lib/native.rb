@@ -4,7 +4,7 @@ require 'shellwords'
 require 'fileutils'
 
 module Native
-  PATH_KEYS = %w[HOME JAVA_HOME GOROOT GOPATH GOCACHE GOMODCACHE CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR TMPDIR].freeze
+  PATH_KEYS = %w[HOME JAVA_HOME GOROOT GOPATH GOBIN GOCACHE GOMODCACHE CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR TMPDIR].freeze
 
   def self.path(root, value)
     # Resolve image symlinks within the image, including absolute targets.
@@ -42,7 +42,7 @@ module Native
     value.is_a?(String) ? simple(value, env) : value
   end
 
-  def self.environment(root, values)
+  def self.environment(root, values, build: false)
     env = values.reject { |key, _| key.start_with?('PROOT_', 'LD_') }
     defaults = {'HOME' => '/root', 'TMPDIR' => '/tmp', 'GOCACHE' => '/tmp/go-cache', 'GOPATH' => '/go'}
     defaults.each { |key, value| env[key] ||= value }
@@ -52,9 +52,16 @@ module Native
       raise "#{key} must be an absolute image path" unless env[key].start_with?('/')
       env[key] = path(root, env[key])
     end
-    # Use only relocatable toolchains from the image; linker and OS utilities
-    # come from the Scalingo stack, not the image's /usr/bin.
+    # Build commands can use any image executable, with stack tools as fallback.
+    # Runtime keeps its existing toolchain-only PATH.
     bins = %w[GOROOT JAVA_HOME CARGO_HOME].filter_map { |key| File.join(env[key], 'bin') if env[key] }
+    if build
+      image_path = values.fetch('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')
+      bins += image_path.split(':').map do |entry|
+        raise 'build PATH entries must be absolute image paths' unless entry.start_with?('/')
+        path(root, entry)
+      end
+    end
     env['PATH'] = (bins + ['/usr/bin', '/bin']).join(':')
     env
   end
@@ -72,7 +79,7 @@ module Native
 
   def self.prepare(root, config, build: false, override: nil)
     values = config.fetch('env')
-    env = environment(root, values)
+    env = environment(root, values, build: build)
     unless build
       protected = PATH_KEYS + %w[PATH DOCKER_AUTH_CONFIG DOCKER_BUILD_ARGS]
       ENV.each { |key, val| env[key] = val unless protected.include?(key) || key.start_with?('PROOT_', 'LD_') }
@@ -80,28 +87,34 @@ module Native
     cmd = argv(override || config.fetch('argv'), env)
     raise 'empty command' unless cmd.is_a?(Array) && !cmd.empty? && cmd.all? { |x| x.is_a?(String) && !x.include?("\0") }
     executable = cmd.first
-    if %w[sh bash dash ash zsh ksh env].include?(File.basename(executable))
+    if !build && %w[sh bash dash ash zsh ksh env].include?(File.basename(executable))
       raise 'shell/interpreter entrypoints are unsupported; override with ENTRYPOINT [] and a native CMD'
     end
     if build
-      allowed = (executable == 'go' && (cmd[1] == 'build' || cmd[1, 2] == %w[mod download])) ||
-                (executable == 'cargo' && %w[build fetch].include?(cmd[1])) || executable == 'javac'
-      raise "unsupported RUN command #{executable.inspect}; supported: go build/mod download, cargo build/fetch, javac" unless allowed
-      raise 'Go adapter requires CGO_ENABLED=0' if executable == 'go' && values.fetch('CGO_ENABLED', '0') != '0'
-      env['CGO_ENABLED'] = '0' if executable == 'go'
+      # Preserve the Go adapter default for Go invoked directly or by a script.
+      env['CGO_ENABLED'] ||= '0' if env['GOROOT']
     elsif executable != 'java' && !executable.start_with?('/')
       raise 'runtime requires java or an absolute image path to a native executable; shell entrypoints are unsupported'
     end
     resolved = if executable.start_with?('/')
                  path(root, executable)
+               elsif build && executable.include?('/')
+                 path(root, File.join(config.fetch('workdir'), executable))
+               elsif build
+                 env.fetch('PATH').split(':').map { |directory| File.join(directory, executable) }
+                    .find { |candidate| File.file?(candidate) && File.executable?(candidate) }
                else
                  key = {'go' => 'GOROOT', 'cargo' => 'CARGO_HOME', 'java' => 'JAVA_HOME', 'javac' => 'JAVA_HOME'}.fetch(executable)
                  raise "image must define #{key} or contain the supported toolchain layout" unless env[key]
                  path(root, File.join(values[key] || '/usr/local/go', 'bin', executable))
                end
-    raise "missing image executable: #{executable}" unless File.file?(resolved) && File.executable?(resolved)
-    raise 'script executables are unsupported; use a native binary or java' unless File.binread(resolved, 4) == "\x7fELF".b
-    command = [[resolved, executable]] + cmd.drop(1).map { |value| argument(root, value) }
+    raise "missing executable: #{executable}" unless resolved && File.file?(resolved) && File.executable?(resolved)
+    resolved = File.realpath(resolved) if build
+    raise 'runtime script executables are unsupported; use a native binary or java' unless build || File.binread(resolved, 4) == "\x7fELF".b
+    # A shell program is source text, not a filesystem argument. In particular,
+    # do not relocate an entire script merely because it begins with '/'.
+    shell = build && %w[sh bash dash ash zsh ksh].include?(File.basename(executable))
+    command = [[resolved, executable]] + cmd.drop(1).map { |value| shell ? value : argument(root, value) }
     [env, command, path(root, config.fetch('workdir'))]
   end
 end

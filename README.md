@@ -27,8 +27,8 @@ The samples are at https://github.com/SCedricThomas/sample on branches `go`,
 3. Extract the filesystem without root. Convert image symlinks to relative
    links so native tools can follow them after the artifact is relocated.
 4. Apply `COPY`, `ADD`, `.dockerignore`, `WORKDIR`, `ARG`, and `ENV`.
-5. Run an explicitly supported toolchain command directly on the Scalingo
-   stack, with the image's Go, Rust or Java toolchain and adapted paths.
+5. Run build commands and scripts natively on the Scalingo stack, resolving
+   image executables through PATH and adapting paths for simple commands.
 6. Replace the deployment source directory with `.docker-runtime/`, containing
    the filesystem, metadata and Ruby launcher/adapter. This changes the build
    copy, not your Git checkout.
@@ -44,9 +44,7 @@ restrictions. No PRoot binary is downloaded or packaged.
 | Dockerfile operation | Native-runner behavior |
 | --- | --- |
 | `FROM` | One Linux amd64 registry image; tag/digest and global ARG expansion |
-| `RUN go build ...`, `RUN go mod download ...` | Image `/usr/local/go` or `GOROOT`; CGO disabled |
-| `RUN cargo build ...`, `RUN cargo fetch ...` | Image `CARGO_HOME` and `RUSTUP_HOME`; host linker/libraries |
-| `RUN javac ...` | Image `JAVA_HOME`; host-compatible JDK required |
+| `RUN` | Arbitrary native commands and executable scripts; image PATH, then stack fallback; shell expressions use image `/bin/sh` |
 | `COPY` | Literal relative files/directories, multiple sources; no source symlinks/globs |
 | `ADD` | Local files/directories like COPY, local tar extraction (plain/gzip/bzip2/xz), HTTP(S) file downloads |
 | `WORKDIR`, `ENV`, `ARG` | Paths and build environment; `ENV` uses KEY=value syntax |
@@ -54,10 +52,30 @@ restrictions. No PRoot binary is downloaded or packaged.
 | `ENTRYPOINT` | JSON exec form only; native ELF executable at absolute image path, or `java` |
 | `EXPOSE`, `LABEL` | Validated metadata only |
 
-A simple shell-style `RUN go build ...` is tokenized, **not passed to a shell**.
-Quotes and `$NAME` substitutions are supported in RUN words. JSON arrays retain
-literal arguments. Shell operators, pipes, redirections, command substitution,
-globs and scripts are unsupported. Use separate RUN instructions.
+Simple `RUN` commands execute directly, with quoted arguments and path
+adaptation. There is no language or subcommand whitelist: `go install`, `go test`,
+`make`, and executable build scripts can run when the required tools are available
+and compatible with the stack. Go defaults to `CGO_ENABLED=0`; an explicit value
+is respected.
+
+`RUN` expressions containing shell syntax or variable expansion execute through
+the image's `/bin/sh -c`. This supports `&&`, pipes, redirections, substitutions,
+globs, assignments and shell builtins. JSON arrays retain literal arguments;
+use `RUN ["/bin/bash", "-c", "..."]` to select another installed shell explicitly.
+Scripts require an executable bit and a host-compatible shebang interpreter.
+
+Shell source and script contents are **not path-rewritten**. Use paths relative
+to WORKDIR or relocated variables, for example:
+
+```dockerfile
+RUN go install github.com/cespare/reflex@latest
+RUN go install -buildvcs=false && test -x "$GOPATH/bin/sample-go-gin"
+RUN ./scripts/build.sh
+```
+
+An absolute path written inside a shell expression or script addresses the outer
+Scalingo filesystem. These commands remain unprivileged; adding general RUN
+support does not enable root package installation or emulate a Docker rootfs.
 
 `CMD /go/bin/sample-go-gin` is supported and runs the executable directly.
 Arguments can be quoted, for example `CMD java -cp /app/out Main "hello world"`.
@@ -88,10 +106,11 @@ into paths under the extracted filesystem. Colon-separated absolute classpath
 entries are adapted too. It resolves `WORKDIR` under the same filesystem.
 
 Known path variables (`HOME`, `JAVA_HOME`, `GOROOT`, `GOPATH`, `GOCACHE`,
-`GOMODCACHE`, `CARGO_HOME`, `RUSTUP_HOME`, `CARGO_TARGET_DIR`, `TMPDIR`) are
+`GOBIN`, `GOMODCACHE`, `CARGO_HOME`, `RUSTUP_HOME`, `CARGO_TARGET_DIR`, `TMPDIR`) are
 relocated. These variables must contain a single absolute image path.
-`PATH` is constructed from the selected image toolchains plus `/usr/bin:/bin`
-from the Scalingo stack. Image OS utilities are not placed on PATH.
+`PATH` starts with the selected image toolchains. During builds, relocated image
+PATH directories follow; `/usr/bin:/bin` from the Scalingo stack are fallbacks.
+Runtime PATH retains only the selected toolchains and stack directories.
 
 This does **not** rewrite paths embedded in binaries, source code or config
 files. An application that opens `/app/data` internally still opens the outer
@@ -101,7 +120,7 @@ are ordinary host-relative paths; this adapter is not a filesystem sandbox.
 
 Executables use the host dynamic loader and native libraries. We do not rebind
 image libc or install image system packages. Alpine/musl tools and binaries that
-require newer or missing host libraries are not supported. Go CGO is disabled;
+require newer or missing host libraries are not supported. Go CGO defaults off;
 Rust uses the stack's linker and must target a compatible runtime stack. Java
 uses the extracted JDK/JRE with host libraries. Dependencies with native system
 requirements need further adapter support. Build scripts and compiler plugins

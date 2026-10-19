@@ -23,9 +23,19 @@ DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 def native_command(value, env):
     if value.startswith("["):
         return command(value)
-    if re.search(r"[;&|<>`\n*?\[\](){}]", value):
-        raise BuildError("shell operators, substitutions and globs are unsupported; use separate RUN instructions")
-    return words(value, env)
+    # Retain argument relocation for simple commands. Shell expressions must
+    # reach the shell intact, with expansion happening in the relocated env.
+    if re.search(r"[;&|<>`\n*?\[\](){}$#~]", value):
+        return command(value)
+    argv = words(value, env)
+    builtins = {".", ":", "[", "break", "cd", "continue", "eval", "exec", "exit",
+                "export", "read", "readonly", "return", "set", "shift", "test",
+                "times", "trap", "type", "ulimit", "umask", "unset", "wait",
+                "alias", "unalias", "command", "getopts", "hash", "jobs", "fg", "bg", "fc",
+                "if", "for", "while", "until", "case", "!"}
+    if argv and (argv[0] in builtins or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", argv[0])):
+        return command(value)
+    return argv
 
 
 def relocate_links(root):

@@ -1,5 +1,6 @@
 require 'minitest/autorun'
 require 'tmpdir'
+require 'open3'
 require_relative '../lib/native'
 
 class NativeTest < Minitest::Test
@@ -47,14 +48,52 @@ class NativeTest < Minitest::Test
     assert_equal ["#{@root}/usr/local/cargo/bin/rustup", 'cargo'], cmd[0]
   end
 
-  def test_unsupported_build_commands_and_cgo
-    [['apt-get', 'update'], ['/bin/sh', '-c', 'true'], ['go', 'test']].each do |argv|
+  def test_go_install_and_other_subcommands
+    elf('/usr/local/go/bin/go')
+    @config['env'] = {'GOPATH' => '/go', 'GOBIN' => '/custom/bin'}
+    [%w[go install github.com/cespare/reflex@latest], %w[go install -buildvcs=false], %w[go test ./...]].each do |argv|
       @config['argv'] = argv
-      assert_raises(RuntimeError) { Native.prepare(@root, @config, build: true) }
+      env, cmd, = Native.prepare(@root, @config, build: true)
+      assert_equal ["#{@root}/usr/local/go/bin/go", 'go'], cmd.first
+      assert_equal argv.drop(1), cmd.drop(1)
+      assert_equal "#{@root}/go", env['GOPATH']
+      assert_equal "#{@root}/custom/bin", env['GOBIN']
+      assert_equal '0', env['CGO_ENABLED']
     end
-    @config['argv'] = ['go', 'build']
     @config['env']['CGO_ENABLED'] = '1'
-    assert_raises(RuntimeError) { Native.prepare(@root, @config, build: true) }
+    env, = Native.prepare(@root, @config, build: true)
+    assert_equal '1', env['CGO_ENABLED']
+  end
+
+  def test_arbitrary_image_commands_and_relative_scripts
+    script = File.join(@root, 'app/custom-tool')
+    File.write(script, "#!/bin/sh\nprintf '%s' \"$1\"\n")
+    File.chmod(0755, script)
+    @config['env']['PATH'] = '/app:/usr/bin:/bin'
+    ['custom-tool', './custom-tool', '/app/custom-tool'].each do |executable|
+      @config['argv'] = [executable, 'hello world']
+      env, cmd, cwd = Native.prepare(@root, @config, build: true)
+      output, status = Open3.capture2(env, *cmd, chdir: cwd, unsetenv_others: true)
+      assert status.success?
+      assert_equal 'hello world', output
+    end
+    @config['argv'] = ['buildpack-command-that-does-not-exist']
+    error = assert_raises(RuntimeError) { Native.prepare(@root, @config, build: true) }
+    assert_match 'missing executable', error.message
+  end
+
+  def test_build_shell_expressions_expansion_and_exit_status
+    FileUtils.mkdir_p(File.join(@root, 'bin'))
+    FileUtils.cp('/bin/sh', File.join(@root, 'bin/sh'))
+    @config['env']['MESSAGE'] = 'hello world'
+    @config['argv'] = ['/bin/sh', '-c', 'printf "%s" "$MESSAGE" | cat > result; test "$(cat result)" = "$MESSAGE" && exit 7']
+    env, cmd, cwd = Native.prepare(@root, @config, build: true)
+    _, status = Open3.capture2(env, *cmd, chdir: cwd, unsetenv_others: true)
+    assert_equal 7, status.exitstatus
+    assert_equal 'hello world', File.read(File.join(@root, 'app/result'))
+    @config['argv'] = ['/bin/sh', '-c', '/bin/echo literal']
+    _, cmd, = Native.prepare(@root, @config, build: true)
+    assert_equal '/bin/echo literal', cmd.last
   end
 
   def test_runtime_scripts_and_shell_syntax_rejected
