@@ -20,39 +20,27 @@ from image import BuildError, guest_path, install_tools, pull, remove
 DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
-def identity(root, user):
-    user, _, group = (user or "0").partition(":")
-    passwd = guest_path(root, "/etc/passwd")
-    accounts = [line.split(":") for line in passwd.read_text().splitlines()] if passwd.exists() else []
-    entry = next((row for row in accounts if len(row) == 7 and (row[0] == user or row[2] == user)), None)
-    uid = user if user.isdecimal() else entry[2] if entry else None
-    gid = entry[3] if entry else "0"
-    if group:
-        if group.isdecimal():
-            gid = group
-        else:
-            groupfile = guest_path(root, "/etc/group")
-            groups = [line.split(":") for line in groupfile.read_text().splitlines()] if groupfile.exists() else []
-            found = next((row for row in groups if len(row) >= 3 and row[0] == group), None)
-            if not found:
-                raise BuildError(f"unknown image group: {group}")
-            gid = found[2]
-    if uid is None or not uid.isdecimal() or not gid.isdecimal():
-        raise BuildError(f"unknown image user: {user}")
-    return uid + ":" + gid, entry[5] if entry else "/root" if uid == "0" else "/"
+def native_command(value, env):
+    if value.startswith("["):
+        return command(value)
+    if re.search(r"[;&|<>`\n*?\[\](){}]", value):
+        raise BuildError("shell operators, substitutions and globs are unsupported; use separate RUN instructions")
+    return words(value, env)
 
 
-def proot_args(binary, root, cwd, user):
-    return [str(binary), "--kill-on-exit", "-r", str(root), "-i", user, "-w", cwd,
-            "-b", "/dev", "-b", "/proc", "-b", "/sys",
-            "-b", "/etc/hosts:/etc/hosts!", "-b", "/etc/resolv.conf:/etc/resolv.conf!"]
-
-
-def check_proot(binary):
-    check = subprocess.run([str(binary), "-r", "/", "-w", "/", "/bin/true"],
-                           env={"PATH": DEFAULT_PATH}, capture_output=True, timeout=20)
-    if check.returncode:
-        raise BuildError("PRoot cannot trace a child process. This builder's ptrace/seccomp policy is incompatible; no capability escalation is attempted. " + check.stderr.decode(errors="replace").strip())
+def relocate_links(root):
+    # Native tools follow symlinks themselves: convert image-absolute links
+    # into relative links before executing anything. Resolve all before editing.
+    links = []
+    for folder, dirs, files in os.walk(root, followlinks=False):
+        for name in dirs + files:
+            link = Path(folder) / name
+            if link.is_symlink():
+                target = guest_path(root, '/' + link.relative_to(root).as_posix())
+                links.append((link, os.path.relpath(target, link.parent)))
+    for link, target in links:
+        link.unlink()
+        link.symlink_to(target)
 
 
 def argument(value, env, overrides, inherited):
@@ -82,10 +70,13 @@ def assignments(value, env):
 def build(source, runtime, workspace, tools, plan, overrides, auth):
     args, global_args, env = {}, {}, {}
     root = runtime / "rootfs"
-    cwd, user, entrypoint, cmd, shell = "/", "0", [], [], ["/bin/sh", "-c"]
+    cwd, entrypoint, cmd = "/", [], []
     explicit_cmd, in_stage = False, False
     ignored = Ignore(source)
     pinned = None
+    for name in ("launch.rb", "native.rb"):
+        shutil.copy2(Path(__file__).with_name(name), runtime / ("launch" if name == "launch.rb" else name))
+    (runtime / "launch").chmod(0o755)
     for line, op, value in plan:
         print(f"-----> Dockerfile line {line}: {op}", flush=True)
         try:
@@ -98,6 +89,9 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
                 if len(references) != 1 or references[0] == "scratch":
                     raise BuildError("FROM requires one registry image; scratch, stage aliases and multiple stages are unsupported")
                 pinned, config = pull(tools["crane"], references[0], workspace, root, auth)
+                relocate_links(root)
+                if config.get("User") not in (None, "", "0", "root", "0:0", "root:root"):
+                    raise BuildError("image USER is unsupported; commands run as Scalingo user")
                 if config.get("OnBuild") or config.get("Volumes"):
                     raise BuildError("base images with ONBUILD or VOLUME declarations are unsupported")
                 if config.get("StopSignal") not in (None, "", "SIGTERM", "15"):
@@ -111,10 +105,8 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
                     env[key] = val
                 env.setdefault("PATH", DEFAULT_PATH)
                 cwd = config.get("WorkingDir") or "/"
-                user = config.get("User") or "0"
                 entrypoint, cmd = config.get("Entrypoint") or [], config.get("Cmd") or []
-                shell = config.get("Shell") or shell
-                for field in (entrypoint, cmd, shell):
+                for field in (entrypoint, cmd):
                     if not isinstance(field, list) or not all(isinstance(arg, str) and "\0" not in arg for arg in field):
                         raise BuildError("invalid base-image command configuration")
                 for folder in (cwd, "/tmp", "/dev", "/proc", "/sys", "/etc"):
@@ -131,25 +123,22 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
             elif op == "COPY":
                 copy(source, root, cwd, value, args | env, ignored)
             elif op == "RUN":
-                uid, home = identity(root, user)
-                runenv = {"HOME": home} | args | env
-                runenv = {key: val for key, val in runenv.items() if not key.startswith("PROOT_")}
-                runenv["PROOT_TMP_DIR"] = "/tmp"
-                completed = subprocess.run(proot_args(tools["proot"], root, cwd, uid) + command(value, shell), env=runenv, check=False)
+                runenv = args | env
+                argv = native_command(value, runenv)
+                metadata = {"argv": argv, "env": runenv, "workdir": cwd}
+                (runtime / "config.json").write_text(json.dumps(metadata))
+                completed = subprocess.run(["/usr/bin/ruby", str(runtime / "launch"), "--build", str(runtime)],
+                                           env={"PATH": DEFAULT_PATH}, check=False)
                 if completed.returncode:
-                    raise BuildError(f"RUN failed with exit code {completed.returncode}")
+                    raise BuildError(f"RUN failed with exit code {completed.returncode}; image tools must be compatible with the Scalingo stack")
             elif op == "CMD":
-                cmd, explicit_cmd = command(value, shell), True
+                cmd, explicit_cmd = command(value), True
             elif op == "ENTRYPOINT":
-                entrypoint = command(value, shell)
+                entrypoint = command(value)
                 if not explicit_cmd:
                     cmd = []
             elif op == "USER":
-                users = words(value, args | env)
-                if len(users) != 1:
-                    raise BuildError("USER requires user[:group]")
-                user = users[0]
-                identity(root, user)
+                raise BuildError("USER is unsupported; build and runtime use Scalingo's unprivileged user")
             elif op == "EXPOSE":
                 ports = words(value, args | env)
                 if not ports or any(not re.fullmatch(r"\d+(/tcp|/udp)?", p) or not 1 <= int(p.split("/")[0]) <= 65535 for p in ports):
@@ -162,14 +151,15 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
     argv = entrypoint + cmd
     if not argv or not argv[0]:
         raise BuildError("no startup command: supply CMD or ENTRYPOINT")
-    uid, home = identity(root, user)
-    env.setdefault("HOME", home)
-    metadata = {"image": pinned, "argv": argv, "env": env, "workdir": cwd, "identity": uid}
+    if argv[0] != "java" and not argv[0].startswith("/"):
+        raise BuildError("startup requires java or an absolute image path to a native executable")
+    metadata = {"image": pinned, "argv": argv, "env": env, "workdir": cwd, "mode": "native"}
     (runtime / "config.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    shutil.copy2(tools["proot"], runtime / "proot")
-    shutil.copy2(Path(__file__).with_name("launch.rb"), runtime / "launch")
-    shutil.copy2(Path(__file__).parents[1] / "licenses" / "PRoot.txt", runtime / "PRoot-LICENSE.txt")
-    (runtime / "launch").chmod(0o755)
+    # Validate startup before publishing; do not execute the application.
+    subprocess.run(["/usr/bin/ruby", "-r", str(runtime / "native.rb"), "-e",
+                    'Native.prepare(ARGV[0], JSON.parse(File.read(ARGV[1])))',
+                    str(root), str(runtime / "config.json")], check=True,
+                   env={"PATH": DEFAULT_PATH})
 
 
 def procfile(source):
@@ -220,7 +210,6 @@ def main():
     cache = cache / "docker-buildpack"
     cache.mkdir(parents=True, exist_ok=True)
     tools = install_tools(cache, json.loads(Path(__file__).parents[1].joinpath("tools.json").read_text()))
-    check_proot(tools["proot"])
     # Work under BUILD_DIR's parent so final publication is a rename, not a copy
     # of a potentially large image; nothing is written into the source context.
     with tempfile.TemporaryDirectory(prefix="docker-buildpack-", dir=source.parent) as directory:
@@ -239,6 +228,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (BuildError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+    except (BuildError, OSError, ValueError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
         print(f" ! Dockerfile build failed: {exc}", file=sys.stderr)
         sys.exit(1)

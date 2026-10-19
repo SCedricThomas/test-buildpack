@@ -10,7 +10,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 STACK = 'scalingo/scalingo-26:latest'
-RESTRICTIONS = ['--user', '10000:10000', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256']
+RESTRICTIONS = ['--user', '10000:10000', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--pids-limit', '256', '--security-opt', 'seccomp=' + str(ROOT / 'tests/no-ptrace.json')]
 
 
 def docker(*args, capture=False):
@@ -56,7 +56,7 @@ def check(language, cache, runtime_image):
             if time.monotonic() >= deadline:
                 raise AssertionError('launcher failed to stop on SIGTERM')
             time.sleep(0.2)
-        print(f'PASS buildpack {language}: image pull, source build, relocated runtime, HTTP, PORT, SIGTERM; no capabilities', flush=True)
+        print(f'PASS buildpack {language}: image pull, source build, relocated runtime, HTTP, PORT, SIGTERM; ptrace denied, no capabilities', flush=True)
     finally:
         if container:
             try:

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
-from build import argument, identity, procfile
+from build import argument, native_command, procfile, relocate_links
 from dockerfile import Ignore, command, copy, parse, words
 from image import BuildError, guest_path, unpack
 
@@ -99,12 +99,28 @@ class BuildpackTests(unittest.TestCase):
         self.assertEqual(argument('VERSION=old', {}, {'VERSION': 'new'}, {}), ('VERSION', 'new'))
         self.assertEqual(argument('VERSION', {}, {}, {'VERSION': 'global'}), ('VERSION', 'global'))
 
-    def test_image_user_lookup(self):
+    def test_native_run_rejects_shell_and_preserves_exec_arguments(self):
+        for text in ['apt-get update && apt-get install gcc', 'go build > output', 'go build $(pwd)', 'cargo build; echo done']:
+            with self.assertRaises(BuildError):
+                native_command(text, {})
+        self.assertEqual(native_command('go build -o /app/server .', {}), ['go', 'build', '-o', '/app/server', '.'])
+        self.assertEqual(native_command('["javac", "$LITERAL"]', {}), ['javac', '$LITERAL'])
+
+    def test_native_runtime_rejects_shell_and_user(self):
+        for text in ['FROM alpine\nCMD echo hello\n', 'FROM alpine\nUSER 1000\n']:
+            (self.source / 'Dockerfile').write_text(text)
+            with self.assertRaises(BuildError):
+                parse(self.source / 'Dockerfile')
+
+    def test_native_symlinks_survive_artifact_relocation(self):
         root = self.directory / 'rootfs'
-        (root / 'etc').mkdir(parents=True)
-        (root / 'etc/passwd').write_text('app:x:123:456::/home/app:/bin/sh\n')
-        self.assertEqual(identity(root, 'app'), ('123:456', '/home/app'))
-        self.assertEqual(identity(root, '123:789'), ('123:789', '/home/app'))
+        archive = self.archive([('usr/bin/tool', 'file', b'guest'), ('bin', 'symlink', '/usr/bin'), ('escape', 'symlink', '../../usr/bin/tool')])
+        unpack(archive, root)
+        relocate_links(root)
+        moved = self.directory / 'relocated'
+        root.rename(moved)
+        self.assertEqual((moved / 'bin/tool').read_bytes(), b'guest')
+        self.assertEqual((moved / 'escape').read_bytes(), b'guest')
 
     def test_procfile_runs_inside_guest(self):
         (self.source / 'Procfile').write_text('worker: java -cp /app/out Main\n')

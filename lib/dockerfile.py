@@ -84,7 +84,11 @@ def parse(path):
         op, value = match[1].upper(), match[2]
         if op not in OPS:
             raise BuildError(f"line {start}: {op} is unsupported")
-        if value.startswith("--") or "<<" in value:
+        if op in {"CMD", "ENTRYPOINT"} and not value.startswith("["):
+            raise BuildError(f"line {start}: native runner requires JSON exec form for {op}")
+        if op == "USER":
+            raise BuildError(f"line {start}: USER is unsupported; commands run as Scalingo user")
+        if value.startswith("--") or (not value.startswith("[") and "<<" in value):
             raise BuildError(f"line {start}: instruction flags and heredocs are unsupported")
         if op in {"RUN", "CMD", "ENTRYPOINT"}:
             argv = command(value)
