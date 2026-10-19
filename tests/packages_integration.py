@@ -25,5 +25,11 @@ try:
                         'scalingo/scalingo-26-minimal:latest', capture=True).stdout
         assert json.loads(output) == {'answer': 42}, output
         print('PASS APT: extracted executable and libraries work after relocation on minimal runtime', flush=True)
+        output = docker('run', '--rm', *RESTRICTIONS,
+                        '--mount', f'type=volume,src={volume},dst=/app,volume-subpath=apt',
+                        '--entrypoint', '/app/.docker-runtime/launch', STACK,
+                        '--', 'pipenv', '--version', capture=True).stdout
+        assert 'pipenv, version' in output, output
+        print('PASS APT Python: pipenv imports extracted modules after relocation', flush=True)
 finally:
     docker('volume', 'rm', volume, capture=True)

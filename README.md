@@ -122,7 +122,10 @@ libraries needed by a smaller runtime stack.
 
 Package binaries take precedence on PATH. The launcher reconstructs library,
 header and pkg-config paths for each build and deployed location. This includes
-`LD_LIBRARY_PATH`, `LIBRARY_PATH`, `CPATH`, and `PKG_CONFIG_PATH`; Git's helper
+`LD_LIBRARY_PATH`, `LIBRARY_PATH`, `CPATH`, `PKG_CONFIG_PATH`, and `PYTHONPATH`;
+Python packages in `usr/lib/python3/dist-packages` are available to the stack's
+Python interpreter, including tools such as `pipenv`. Python-based commands
+still require a compatible interpreter on the build/runtime stack. Git's helper
 path is set when an extracted Git package provides it. No maintainer scripts,
 services, system users, alternatives or other post-install configuration run.
 This is package extraction, not a complete OS package installation.

@@ -17,7 +17,8 @@ env = Path('/artifacts/env')
 env.mkdir(exist_ok=True)
 if manager == 'apt':
     dockerfile = '''FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends jq libjq1 libonig5
+RUN apt-get update && apt-get install -y --no-install-recommends jq libjq1 libonig5 pipenv && pipenv --version
+RUN pipenv --version
 RUN jq -n '{"answer":42}' > answer.json
 RUN apt-get clean
 CMD ["jq", "-n", "{\\"answer\\":42}"]

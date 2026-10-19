@@ -5,7 +5,7 @@ require 'fileutils'
 
 module Native
   PATH_KEYS = %w[HOME JAVA_HOME GOROOT GOPATH GOBIN GOCACHE GOMODCACHE CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR TMPDIR].freeze
-  PACKAGE_KEYS = %w[LIBRARY_PATH INCLUDE_PATH CPATH CPPPATH PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR GIT_EXEC_PATH APK_ROOT].freeze
+  PACKAGE_KEYS = %w[LIBRARY_PATH INCLUDE_PATH CPATH CPPPATH PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR PYTHONPATH GIT_EXEC_PATH APK_ROOT].freeze
 
   def self.path(root, value)
     # Resolve image symlinks within the image, including absolute targets.
@@ -75,6 +75,10 @@ module Native
       %w[INCLUDE_PATH CPATH CPPPATH].each { |key| env[key] = includes }
       env['PKG_CONFIG_PATH'] = %w[usr/lib/x86_64-linux-gnu/pkgconfig usr/lib/pkgconfig usr/share/pkgconfig].map { |part| File.join(apt, part) }.join(':')
       env['PKG_CONFIG_SYSROOT_DIR'] = apt
+      # Debian/Ubuntu Python scripts use the stack interpreter, which does not
+      # discover modules extracted outside its normal /usr prefix on its own.
+      python_modules = File.join(apt, 'usr/lib/python3/dist-packages')
+      env['PYTHONPATH'] = [python_modules, env['PYTHONPATH']].compact.reject(&:empty?).join(':')
       git_core = File.join(apt, 'usr/lib/git-core')
       env['GIT_EXEC_PATH'] = git_core if File.directory?(git_core)
     end

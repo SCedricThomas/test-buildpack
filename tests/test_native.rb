@@ -168,6 +168,37 @@ class NativeTest < Minitest::Test
     end
   end
 
+  def test_extracted_python_modules_work_during_build_and_after_relocation
+    old_pythonpath = ENV['PYTHONPATH']
+    ENV['PYTHONPATH'] = '/outer/python/modules'
+    Dir.mktmpdir do |directory|
+      runtime = File.join(directory, 'build')
+      FileUtils.mkdir_p(File.join(runtime, 'rootfs/app'))
+      bin = File.join(runtime, 'packages/apt/usr/bin')
+      modules = File.join(runtime, 'packages/apt/usr/lib/python3/dist-packages')
+      FileUtils.mkdir_p([bin, modules])
+      File.write(File.join(modules, 'extracted_example.py'), "value = 'imported'\n")
+      executable = File.join(bin, 'python-tool')
+      File.write(executable, "#!/usr/bin/python3\nimport extracted_example\nprint(extracted_example.value)\n")
+      File.chmod(0755, executable)
+      config = {'env' => {'PYTHONPATH' => 'project-modules'}, 'argv' => ['python-tool'], 'workdir' => '/app'}
+      [true, false].each do |build|
+        unless build
+          moved = File.join(directory, 'deployed')
+          File.rename(runtime, moved)
+          runtime = moved
+        end
+        env, cmd, cwd = Native.prepare(File.join(runtime, 'rootfs'), config, build: build)
+        assert_equal [File.join(runtime, 'packages/apt/usr/lib/python3/dist-packages'), 'project-modules'], env['PYTHONPATH'].split(':')
+        output, status = Open3.capture2(env, *cmd, chdir: cwd, unsetenv_others: true)
+        assert status.success?
+        assert_equal "imported\n", output
+      end
+    end
+  ensure
+    ENV['PYTHONPATH'] = old_pythonpath
+  end
+
   def test_guest_symlinks_cannot_resolve_outside_image
     File.symlink('/app/server', File.join(@root, 'absolute'))
     File.symlink('../../app/server', File.join(@root, 'relative'))
