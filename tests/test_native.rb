@@ -135,6 +135,39 @@ class NativeTest < Minitest::Test
     assert_equal ['/bin/sh', '-c', 'exec app'], Native.simple('exec app', {})
   end
 
+  def test_package_prefix_relocation_and_wrapper_precedence
+    Dir.mktmpdir do |directory|
+      runtime = File.join(directory, 'original')
+      root = File.join(runtime, 'rootfs')
+      FileUtils.mkdir_p(File.join(root, 'app'))
+      FileUtils.mkdir_p(File.join(runtime, 'packages/apt/usr/bin'))
+      FileUtils.mkdir_p(File.join(runtime, 'packages/apk/usr/lib'))
+      FileUtils.mkdir_p(File.join(runtime, 'build-bin'))
+      tool = File.join(runtime, 'packages/apt/usr/bin/packaged-tool')
+      File.write(tool, "#!/bin/sh\necho packaged\n")
+      File.chmod(0755, tool)
+      wrapper = File.join(runtime, 'build-bin/apt-get')
+      File.write(wrapper, "#!/bin/sh\nexit 0\n")
+      File.chmod(0755, wrapper)
+      config = {'env' => {}, 'argv' => ['/usr/bin/apt-get', 'install', 'jq'], 'workdir' => '/app'}
+      env, cmd, = Native.prepare(root, config, build: true)
+      assert_equal wrapper, cmd.first.first
+      assert_equal File.join(runtime, 'build-bin'), env['PATH'].split(':').first
+      moved = File.join(directory, 'moved')
+      File.rename(runtime, moved)
+      config['argv'] = ['packaged-tool']
+      env, cmd, cwd = Native.prepare(File.join(moved, 'rootfs'), config)
+      assert_equal File.join(moved, 'packages/apt/usr/bin/packaged-tool'), cmd.first.first
+      assert_includes env['LD_LIBRARY_PATH'], File.join(moved, 'packages/apt/usr/lib')
+      refute_includes env['LD_LIBRARY_PATH'], '/packages/apk'
+      refute_includes env['LD_LIBRARY_PATH'], runtime
+      assert_equal File.join(moved, 'packages/apk'), env['APK_ROOT']
+      output, status = Open3.capture2(env, *cmd, chdir: cwd, unsetenv_others: true)
+      assert status.success?
+      assert_equal "packaged\n", output
+    end
+  end
+
   def test_guest_symlinks_cannot_resolve_outside_image
     File.symlink('/app/server', File.join(@root, 'absolute'))
     File.symlink('../../app/server', File.join(@root, 'relative'))

@@ -4,5 +4,11 @@
     "url": "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz",
     "sha256": "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0",
     "member": "crane"
+  },
+  "apk-static": {
+    "version": "2.14.12-r0",
+    "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/apk-tools-static-2.14.12-r0.apk",
+    "sha256": "f44523ae4ded143b3d85e16be4bf7ff386fc052406c3b22f87f045efb0aa4305",
+    "member": "sbin/apk.static"
   }
 }

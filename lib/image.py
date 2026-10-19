@@ -41,7 +41,7 @@ def install_tools(cache, manifest):
                 temporary.unlink(missing_ok=True)
         binary = folder / name
         if "member" in spec:
-            with tarfile.open(archive) as tar:
+            with tarfile.open(archive, ignore_zeros=True) as tar:
                 member = tar.getmember(spec["member"])
                 if not member.isfile():
                     raise BuildError(f"invalid {name} archive")
@@ -95,16 +95,20 @@ def archive_path(name):
     return path.as_posix()
 
 
-def unpack(archive, root):
+def unpack(archive, root, merge=False, apk=False):
     """Extract a flattened tar without chown, device creation or host escapes."""
-    root.mkdir()
+    root.mkdir(exist_ok=merge)
     hardlinks = []
-    with tarfile.open(archive) as tar:
+    with tarfile.open(archive, ignore_zeros=apk) as tar:
         for member in tar:
             name = archive_path(member.name)
+            if apk and name.startswith('.'):
+                # APK concatenates signature, control and payload tar streams.
+                # Control scripts and metadata are not application files.
+                continue
             if name == ".":
                 continue
-            path = guest_path(root, name, follow_final=False)
+            path = guest_path(root, name, follow_final=merge and member.isdir())
             if path == root:
                 raise BuildError("image archive entry resolves to root")
             path.parent.mkdir(parents=True, exist_ok=True)

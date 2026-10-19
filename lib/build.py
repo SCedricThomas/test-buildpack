@@ -87,6 +87,17 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
     for name in ("launch.rb", "native.rb"):
         shutil.copy2(Path(__file__).with_name(name), runtime / ("launch" if name == "launch.rb" else name))
     (runtime / "launch").chmod(0o755)
+    for name in ("package_manager.py", "image.py"):
+        shutil.copy2(Path(__file__).with_name(name), runtime / name)
+    (runtime / 'packages/apt').mkdir(parents=True)
+    (runtime / 'build-bin').mkdir()
+    for manager in ('apt-get', 'apt', 'apk'):
+        wrapper = runtime / 'build-bin' / manager
+        wrapper.write_text('#!/bin/sh\nexec /usr/bin/python3 "${0%/*}/../package_manager.py" '
+                           + manager + ' "$@"\n')
+        wrapper.chmod(0o755)
+    if 'apk-static' in tools:
+        shutil.copy2(tools['apk-static'], runtime / 'apk-static')
     for line, op, value in plan:
         print(f"-----> Dockerfile line {line}: {op}", flush=True)
         try:
@@ -168,6 +179,14 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
                     'Native.prepare(ARGV[0], JSON.parse(File.read(ARGV[1])))',
                     str(root), str(runtime / "config.json")], check=True,
                    env={"PATH": DEFAULT_PATH})
+    # Package downloads and resolver indexes are build state, not application data.
+    shutil.rmtree(runtime / 'package-state', ignore_errors=True)
+    shutil.rmtree(runtime / 'build-bin')
+    shutil.rmtree(runtime / '__pycache__', ignore_errors=True)
+    for name in ('apk-static', 'package_manager.py', 'image.py'):
+        (runtime / name).unlink(missing_ok=True)
+    if not any((runtime / 'packages/apt').iterdir()):
+        (runtime / 'packages/apt').rmdir()
 
 
 def procfile(source):

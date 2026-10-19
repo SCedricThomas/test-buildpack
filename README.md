@@ -102,6 +102,56 @@ copied directory are copied unchanged. HTTP(S) URLs download a file with mode
 the URL path's filename. Git sources, URL credentials, instruction flags, source
 globs, and archive links or special files are unsupported.
 
+## Package-manager compatibility wrappers
+
+Build-time `apt-get` and `apt` support `update`, `install`, and `clean` using the
+same download-and-extract approach as Scalingo's APT buildpack:
+
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends jq
+```
+
+The wrapper runs the **Scalingo stack's APT**, using its Ubuntu repositories,
+trusted keys and installed-package status, rather than the FROM image's APT or
+repositories. Package names and versions must therefore exist for the Scalingo
+stack. It downloads requested packages and dependencies selected by APT and
+extracts them into `.docker-runtime/packages/apt`. Explicitly requested packages
+are downloaded even if already installed on the build stack. Dependencies already
+present on the build stack may be omitted; explicitly list any additional
+libraries needed by a smaller runtime stack.
+
+Package binaries take precedence on PATH. The launcher reconstructs library,
+header and pkg-config paths for each build and deployed location. This includes
+`LD_LIBRARY_PATH`, `LIBRARY_PATH`, `CPATH`, and `PKG_CONFIG_PATH`; Git's helper
+path is set when an extracted Git package provides it. No maintainer scripts,
+services, system users, alternatives or other post-install configuration run.
+This is package extraction, not a complete OS package installation.
+
+`apk update` and `apk add` use a checksum-pinned static APK tool to resolve and
+fetch dependencies from the Alpine image's repositories, verify package
+signatures using that image's keys, and extract payloads without running package
+scripts or changing ownership. For example:
+
+```dockerfile
+RUN apk add --no-cache zlib-dev
+```
+
+These packages remain separate in `.docker-runtime/packages/apk`, exposed as
+`APK_ROOT` in subsequent commands and at runtime. Alpine's musl libraries are
+**not** added to the native glibc library path. APK extraction does not make
+Alpine shells, toolchains or applications runnable on the Scalingo stack. Use
+standalone RUN instructions for APK; an Alpine shell still needs a compatible
+execution environment.
+
+Supported flags are APT's `-y`, `--yes`, `--assume-yes`, `-q`, `-qq`, `--quiet`,
+`--no-install-recommends`, `--no-install-suggests`, and APK's `--no-cache`, `-U`,
+`--update-cache`, `-q`, `--quiet`. Repository package names and version constraints
+are accepted; custom configuration flags, unsigned/local packages, upgrades,
+removals and APK virtual packages are rejected. Invoke wrappers by name inside
+shell expressions; absolute paths embedded in shell source are not rewritten.
+Wrappers are available only during builds. Resolver state, downloaded archives
+and wrapper tools are removed before packaging; extracted package files remain.
+
 ## What path adaptation does — and does not do
 
 The adapter rewrites absolute command arguments and `--option=/path` arguments
@@ -123,7 +173,7 @@ are treated as image paths, not literal strings. Relative paths passed to tools
 are ordinary host-relative paths; this adapter is not a filesystem sandbox.
 
 Executables use the host dynamic loader and native libraries. We do not rebind
-image libc or install image system packages. Alpine/musl tools and binaries that
+image libc. Package wrappers extract dependencies without configuring the image OS. Alpine/musl tools and binaries that
 require newer or missing host libraries are not supported. Go CGO defaults off;
 Rust uses the stack's linker and must target a compatible runtime stack. Java
 uses the extracted JDK/JRE with host libraries. Dependencies with native system
@@ -134,7 +184,8 @@ remain ordinary code executing inside the enclosing Scalingo container.
 
 Runtime application settings, including `PORT` and addon credentials, override
 image ENV. Adapter-controlled path variables and PATH cannot be overridden by
-outer-stack values. `LD_*` and legacy `PROOT_*` variables are filtered.
+outer-stack values. Incoming `LD_*` and legacy `PROOT_*` variables are filtered;
+the adapter supplies its own `LD_LIBRARY_PATH` for extracted APT packages.
 Registry auth and build-argument settings are not inherited from the runtime's
 outer environment. Application variables are not passed to RUN automatically.
 
@@ -157,9 +208,10 @@ commands can use `/app/.docker-runtime/launch -- /app/worker` or
 
 ## Size, caching and reproducibility
 
-The entire resulting image filesystem is packaged, including toolchains and
-compiler caches. There is no automatic dependency pruning. Only the downloader
-is cached between builds; layers and application dependencies are fetched again.
+The entire resulting image filesystem and extracted package prefixes are
+packaged, including toolchains and compiler caches. There is no automatic
+dependency pruning. Only the download tools are cached between builds; layers
+and application dependencies are fetched again.
 Pin FROM by digest for reproducibility. Builds require Python 3 and Ruby; runtime
 requires Ruby from the Scalingo stack. Do not assume arbitrary base images work.
 
@@ -169,6 +221,7 @@ requires Ruby from the Scalingo stack. Do not assume arbitrary base images work.
 python3 -m unittest discover -s tests -p 'test_*.py'
 ruby tests/test_native.rb
 python3 tests/integration.py go rust java
+python3 tests/packages_integration.py
 python3 tests/integration.py --runtime-image scalingo/scalingo-26-minimal:latest java
 ```
 
@@ -180,5 +233,6 @@ The build test asserts that `ptrace(TRACEME)` fails with EPERM. Build and runtim
 both use the profile. Checks cover source compilation, relocation, HTTP, PORT
 and SIGTERM. Actual deployment on Scalingo remains to be validated.
 
-`tools.json` pins crane (Apache-2.0) to an upstream release and SHA-256 checksum:
-https://github.com/google/go-containerregistry
+`tools.json` pins crane (Apache-2.0) and the static APK tool (GPL-2.0-only)
+to upstream releases and SHA-256 checksums. Sources:
+https://github.com/google/go-containerregistry and https://gitlab.alpinelinux.org/alpine/apk-tools

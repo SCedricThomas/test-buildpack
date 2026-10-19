@@ -5,6 +5,7 @@ require 'fileutils'
 
 module Native
   PATH_KEYS = %w[HOME JAVA_HOME GOROOT GOPATH GOBIN GOCACHE GOMODCACHE CARGO_HOME RUSTUP_HOME CARGO_TARGET_DIR TMPDIR].freeze
+  PACKAGE_KEYS = %w[LIBRARY_PATH INCLUDE_PATH CPATH CPPPATH PKG_CONFIG_PATH PKG_CONFIG_SYSROOT_DIR GIT_EXEC_PATH APK_ROOT].freeze
 
   def self.path(root, value)
     # Resolve image symlinks within the image, including absolute targets.
@@ -63,6 +64,21 @@ module Native
       raise 'PATH entries must be absolute image paths' unless entry.start_with?('/')
       path(root, entry)
     end
+    packages = File.join(File.dirname(root), 'packages')
+    apt = File.join(packages, 'apt')
+    if File.directory?(apt)
+      bins = %w[usr/bin usr/sbin bin sbin].map { |part| File.join(apt, part) } + bins
+      libraries = %w[lib/x86_64-linux-gnu usr/lib/x86_64-linux-gnu lib usr/lib].map { |part| File.join(apt, part) }.join(':')
+      includes = %w[usr/include usr/include/x86_64-linux-gnu].map { |part| File.join(apt, part) }.join(':')
+      env['LD_LIBRARY_PATH'] = libraries
+      env['LIBRARY_PATH'] = libraries
+      %w[INCLUDE_PATH CPATH CPPPATH].each { |key| env[key] = includes }
+      env['PKG_CONFIG_PATH'] = %w[usr/lib/x86_64-linux-gnu/pkgconfig usr/lib/pkgconfig usr/share/pkgconfig].map { |part| File.join(apt, part) }.join(':')
+      env['PKG_CONFIG_SYSROOT_DIR'] = apt
+      git_core = File.join(apt, 'usr/lib/git-core')
+      env['GIT_EXEC_PATH'] = git_core if File.directory?(git_core)
+    end
+    env['APK_ROOT'] = File.join(packages, 'apk') if File.directory?(File.join(packages, 'apk'))
     env['PATH'] = (bins + ['/usr/bin', '/bin']).join(':')
     env
   end
@@ -82,7 +98,7 @@ module Native
     values = config.fetch('env')
     env = environment(root, values)
     unless build
-      protected = PATH_KEYS + %w[PATH DOCKER_AUTH_CONFIG DOCKER_BUILD_ARGS]
+      protected = PATH_KEYS + PACKAGE_KEYS + %w[PATH DOCKER_AUTH_CONFIG DOCKER_BUILD_ARGS]
       ENV.each { |key, val| env[key] = val unless protected.include?(key) || key.start_with?('PROOT_', 'LD_') }
     end
     cmd = argv(override || config.fetch('argv'), env)
@@ -91,8 +107,13 @@ module Native
     if build
       # Preserve the Go adapter default for Go invoked directly or by a script.
       env['CGO_ENABLED'] ||= '0' if env['GOROOT']
+      wrappers = File.join(File.dirname(root), 'build-bin')
+      env['PATH'] = wrappers + ':' + env['PATH'] if File.directory?(wrappers)
     end
-    resolved = if executable.start_with?('/')
+    package_manager = build && %w[apt apt-get apk /usr/bin/apt /usr/bin/apt-get /sbin/apk /usr/sbin/apk].include?(executable)
+    resolved = if package_manager && File.directory?(wrappers)
+                 File.join(wrappers, File.basename(executable))
+               elsif executable.start_with?('/')
                  path(root, executable)
                elsif executable.include?('/')
                  path(root, File.join(config.fetch('workdir'), executable))
