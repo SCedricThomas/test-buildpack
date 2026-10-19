@@ -26,7 +26,7 @@ The samples are at https://github.com/SCedricThomas/sample on branches `go`,
    its layers, including whiteouts. Optional registry auth is supported.
 3. Extract the filesystem without root. Convert image symlinks to relative
    links so native tools can follow them after the artifact is relocated.
-4. Apply `COPY`, `.dockerignore`, `WORKDIR`, `ARG`, and `ENV`.
+4. Apply `COPY`, `ADD`, `.dockerignore`, `WORKDIR`, `ARG`, and `ENV`.
 5. Run an explicitly supported toolchain command directly on the Scalingo
    stack, with the image's Go, Rust or Java toolchain and adapted paths.
 6. Replace the deployment source directory with `.docker-runtime/`, containing
@@ -48,6 +48,7 @@ restrictions. No PRoot binary is downloaded or packaged.
 | `RUN cargo build ...`, `RUN cargo fetch ...` | Image `CARGO_HOME` and `RUSTUP_HOME`; host linker/libraries |
 | `RUN javac ...` | Image `JAVA_HOME`; host-compatible JDK required |
 | `COPY` | Literal relative files/directories, multiple sources; no source symlinks/globs |
+| `ADD` | Local files/directories like COPY, local tar extraction (plain/gzip/bzip2/xz), HTTP(S) file downloads |
 | `WORKDIR`, `ENV`, `ARG` | Paths and build environment; `ENV` uses KEY=value syntax |
 | `CMD`, `ENTRYPOINT` | JSON exec form only; native ELF executable at absolute image path, or `java` |
 | `EXPOSE`, `LABEL` | Validated metadata only |
@@ -58,11 +59,20 @@ literal arguments. Shell operators, pipes, redirections, command substitution,
 globs and scripts are unsupported. Use separate RUN instructions.
 
 `USER`, multi-stage builds, `scratch`, stage aliases, instruction flags,
-`ADD`, `VOLUME`, `ONBUILD`, `SHELL`, `HEALTHCHECK`, and `STOPSIGNAL` are rejected.
+`VOLUME`, `ONBUILD`, `SHELL`, `HEALTHCHECK`, and `STOPSIGNAL` are rejected.
 Base images with non-root USER declarations, volumes, ONBUILD or custom stop
 signals are rejected. Root defaults do not confer root privileges: all commands
 run as Scalingo's user. Inherited script entrypoints must be explicitly cleared
 with `ENTRYPOINT []` (see Java sample). Image health checks are not executed.
+
+`ADD` supports shell and JSON forms and the same local path and `.dockerignore`
+restrictions as `COPY`. Local archives are detected by content and extracted into
+the destination directory; only regular files and directories are accepted.
+Archive paths containing `..` or absolute paths are rejected. Archives inside a
+copied directory are copied unchanged. HTTP(S) URLs download a file with mode
+0600 and are never automatically extracted; a destination ending in `/` uses
+the URL path's filename. Git sources, URL credentials, instruction flags, source
+globs, and archive links or special files are unsupported.
 
 ## What path adaptation does — and does not do
 

@@ -6,12 +6,16 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import tarfile
+import tempfile
+import urllib.parse
+import urllib.request
 
-from image import BuildError, guest_path, remove
+from image import BuildError, archive_path, guest_path, remove
 
 
 NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-OPS = {"FROM", "ARG", "ENV", "WORKDIR", "COPY", "RUN", "CMD", "ENTRYPOINT", "USER", "EXPOSE", "LABEL"}
+OPS = {"FROM", "ARG", "ENV", "WORKDIR", "COPY", "ADD", "RUN", "CMD", "ENTRYPOINT", "USER", "EXPOSE", "LABEL"}
 
 
 def words(text, env):
@@ -145,20 +149,20 @@ class Ignore:
         return ignored
 
 
-def copy(source, root, cwd, value, env, ignore):
+def copy(source, root, cwd, value, env, ignore, op="COPY"):
     paths = json.loads(value) if value.startswith("[") else words(value, env)
     if not isinstance(paths, list) or len(paths) < 2 or not all(isinstance(x, str) and x and "\0" not in x for x in paths):
-        raise BuildError("COPY requires sources and a destination")
+        raise BuildError(f"{op} requires sources and a destination")
     sources, destination = paths[:-1], paths[-1]
     target = guest_path(root, str(PurePosixPath(cwd) / destination))
     directory = destination.endswith("/") or target.is_dir()
     if len(sources) > 1 and not directory:
-        raise BuildError("multiple COPY sources require a directory destination ending in /")
+        raise BuildError(f"multiple {op} sources require a directory destination ending in /")
 
     def put(origin, logical):
         output = guest_path(root, logical)
         if origin.is_symlink():
-            raise BuildError("COPY of source symlinks is unsupported")
+            raise BuildError(f"{op} of source symlinks is unsupported")
         if origin.is_dir():
             output.mkdir(parents=True, exist_ok=True)
         elif origin.is_file():
@@ -169,22 +173,66 @@ def copy(source, root, cwd, value, env, ignore):
             shutil.copy2(origin, output)
             output.chmod((origin.stat().st_mode & 0o777) | 0o600)
         else:
-            raise BuildError("COPY supports regular files and directories only")
+            raise BuildError(f"{op} supports regular files and directories only")
 
     logical_dest = PurePosixPath(cwd) / destination
     for name in sources:
+        if op == "ADD" and name.startswith(("http://", "https://")):
+            url = urllib.parse.urlsplit(name)
+            if not url.netloc or url.username or url.password or url.fragment or url.path.endswith(".git"):
+                raise BuildError("ADD requires an HTTP(S) file URL without credentials or fragments; Git sources are unsupported")
+            filename = PurePosixPath(url.path).name
+            if directory and (not filename or filename in {".", ".."}):
+                raise BuildError("ADD URL needs a filename for a directory destination")
+            logical = str(logical_dest / filename if directory else logical_dest)
+            # Download completely before replacing any existing destination.
+            with tempfile.TemporaryDirectory(prefix="docker-add-") as temporary:
+                download = Path(temporary) / "download"
+                with urllib.request.urlopen(name, timeout=60) as response, download.open("wb") as output:
+                    if urllib.parse.urlsplit(response.geturl()).scheme not in {"http", "https"}:
+                        raise BuildError("ADD redirects must use HTTP(S)")
+                    shutil.copyfileobj(response, output)
+                download.chmod(0o600)
+                put(download, logical)
+            continue
+        if op == "ADD" and ("://" in name or name.startswith("git@")):
+            raise BuildError("ADD supports local paths and HTTP(S) file URLs only; Git sources are unsupported")
         parts = PurePosixPath(name).parts
         if name.startswith("/") or ".." in parts or any(c in name for c in "*?[]"):
-            raise BuildError("COPY sources must be literal relative paths; globs and .. are unsupported")
+            raise BuildError(f"{op} sources must be literal relative paths; globs and .. are unsupported")
         origin = source / name
         current = source
         for part in parts:
             current /= part
             if current.is_symlink():
-                raise BuildError("COPY of source symlinks is unsupported")
+                raise BuildError(f"{op} of source symlinks is unsupported")
         if not origin.exists() or ignore.excluded(origin.relative_to(source).as_posix()):
-            raise BuildError(f"COPY source missing or ignored: {name}")
-        if origin.is_dir():
+            raise BuildError(f"{op} source missing or ignored: {name}")
+        if op == "ADD" and origin.is_file() and tarfile.is_tarfile(origin):
+            try:
+                with tarfile.open(origin) as archive:
+                    members = archive.getmembers()
+                    # Validate before writing; links and special files are outside
+                    # this runner's supported source-file subset.
+                    for member in members:
+                        archive_path(member.name)
+                        if not (member.isdir() or member.isfile()):
+                            raise BuildError("ADD archives support regular files and directories only")
+                    guest_path(root, str(logical_dest)).mkdir(parents=True, exist_ok=True)
+                    for member in members:
+                        output = guest_path(root, str(logical_dest / member.name))
+                        if member.isdir():
+                            output.mkdir(parents=True, exist_ok=True)
+                        else:
+                            output.parent.mkdir(parents=True, exist_ok=True)
+                            if output.is_file():
+                                remove(output)
+                            with archive.extractfile(member) as stream, output.open("wb") as target:
+                                shutil.copyfileobj(stream, target)
+                            output.chmod((member.mode & 0o777) | 0o600)
+            except tarfile.TarError as exc:
+                raise BuildError(f"invalid ADD archive: {exc}") from exc
+        elif origin.is_dir():
             put(origin, str(logical_dest))
             for folder, dirs, files in os.walk(origin, followlinks=False):
                 for name in dirs + files:

@@ -5,6 +5,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 from build import argument, native_command, procfile, relocate_links
@@ -85,10 +86,85 @@ class BuildpackTests(unittest.TestCase):
             copy(self.source, root, '/', 'escape /file', {}, Ignore(self.source))
 
     def test_multistage_and_flags_rejected_before_execution(self):
-        for contents in ['FROM alpine\nRUN true\nFROM alpine\n', 'FROM alpine\nCOPY --from=build /app /app\n', 'FROM alpine\nADD . /app\n']:
+        for contents in ['FROM alpine\nRUN true\nFROM alpine\n', 'FROM alpine\nCOPY --from=build /app /app\n', 'FROM alpine\nADD --chown=1000 . /app\n']:
             (self.source / 'Dockerfile').write_text(contents)
             with self.assertRaises(BuildError):
                 parse(self.source / 'Dockerfile')
+
+    def test_add_local_files_json_and_ignore(self):
+        root = self.directory / 'rootfs'
+        root.mkdir()
+        (self.source / 'hello world').write_text('hello')
+        (self.source / '.dockerignore').write_text('secret\n')
+        (self.source / 'secret').write_text('hidden')
+        copy(self.source, root, '/app', '["hello world", "data/"]', {}, Ignore(self.source), op='ADD')
+        self.assertEqual((root / 'app/data/hello world').read_text(), 'hello')
+        copy(self.source, root, '/', '. /all/', {}, Ignore(self.source), op='ADD')
+        self.assertFalse((root / 'all/secret').exists())
+        with self.assertRaises(BuildError):
+            copy(self.source, root, '/', 'secret /secret', {}, Ignore(self.source), op='ADD')
+        (self.source / 'Dockerfile').write_text('FROM example\nADD . /app\n')
+        self.assertEqual(parse(self.source / 'Dockerfile')[1][1], 'ADD')
+
+    def test_add_extracts_local_archives_by_content(self):
+        for compression in ['', ':gz', ':bz2', ':xz']:
+            with self.subTest(compression=compression):
+                archive = self.source / 'archive.data'
+                with tarfile.open(archive, 'w' + compression) as tar:
+                    member = tarfile.TarInfo('nested/file')
+                    member.size = 5
+                    member.mode = 0o755
+                    tar.addfile(member, io.BytesIO(b'hello'))
+                root = self.directory / ('root' + compression.replace(':', '_'))
+                root.mkdir()
+                (root / 'app').mkdir()
+                (root / 'app/keep').write_text('keep')
+                copy(self.source, root, '/', 'archive.data /app', {}, Ignore(self.source), op='ADD')
+                self.assertEqual((root / 'app/nested/file').read_bytes(), b'hello')
+                self.assertEqual((root / 'app/nested/file').stat().st_mode & 0o777, 0o755)
+                self.assertEqual((root / 'app/keep').read_text(), 'keep')
+                copy(self.source, root, '/', '. /context', {}, Ignore(self.source), op='ADD')
+                self.assertEqual((root / 'context/archive.data').read_bytes(), archive.read_bytes())
+
+    def test_add_rejects_unsafe_archives_and_context_paths(self):
+        root = self.directory / 'rootfs'
+        root.mkdir()
+        for member in [('../escape', 'file', b'bad'), ('/escape', 'file', b'bad'),
+                       ('link', 'symlink', '/etc/passwd'), ('link', 'hardlink', 'file')]:
+            archive = self.archive([member])
+            (self.source / 'archive').write_bytes(archive.read_bytes())
+            with self.subTest(member=member), self.assertRaises(BuildError):
+                copy(self.source, root, '/', 'archive /app', {}, Ignore(self.source), op='ADD')
+        (self.source / 'link').symlink_to('/etc/passwd')
+        for value in ['link /file', '../image.tar /file', '*.tar /file', 'git://host/repo /app']:
+            with self.subTest(value=value), self.assertRaises(BuildError):
+                copy(self.source, root, '/', value, {}, Ignore(self.source), op='ADD')
+
+    def test_add_downloads_without_extracting_remote_archive(self):
+        root = self.directory / 'rootfs'
+        root.mkdir()
+        contents = self.archive([('file', 'file', b'hello')]).read_bytes()
+        for destination, expected in [('/downloads/', 'downloads/archive.tar'), ('/renamed', 'renamed')]:
+            response = io.BytesIO(contents)
+            response.geturl = lambda: 'https://example.com/archive.tar'
+            with patch('dockerfile.urllib.request.urlopen', return_value=response) as download:
+                copy(self.source, root, '/', 'https://example.com/archive.tar ' + destination,
+                     {}, Ignore(self.source), op='ADD')
+            download.assert_called_once_with('https://example.com/archive.tar', timeout=60)
+            self.assertEqual((root / expected).read_bytes(), contents)
+            self.assertEqual((root / expected).stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(BuildError):
+            copy(self.source, root, '/', 'https://example.com/ /downloads/', {}, Ignore(self.source), op='ADD')
+
+    def test_add_multiple_sources_and_variable_destination(self):
+        root = self.directory / 'rootfs'
+        root.mkdir()
+        for name in ['one', 'two']:
+            (self.source / name).write_text(name)
+        copy(self.source, root, '/app', 'one two $DEST', {'DEST': 'data/'}, Ignore(self.source), op='ADD')
+        self.assertEqual(sorted(p.name for p in (root / 'app/data').iterdir()), ['one', 'two'])
+        with self.assertRaises(BuildError):
+            copy(self.source, root, '/', 'one two /file', {}, Ignore(self.source), op='ADD')
 
     def test_variable_quoting_and_exec_form(self):
         self.assertEqual(words('A="$X hello" B=\'$X\' C=\\$X', {'X': 'world'}), ['A=world hello', 'B=$X', 'C=$X'])

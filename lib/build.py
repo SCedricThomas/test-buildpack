@@ -120,8 +120,8 @@ def build(source, runtime, workspace, tools, plan, overrides, auth):
                     raise BuildError("WORKDIR requires one path")
                 cwd = posixpath.normpath(posixpath.join(cwd, paths[0]))
                 guest_path(root, cwd).mkdir(parents=True, exist_ok=True)
-            elif op == "COPY":
-                copy(source, root, cwd, value, args | env, ignored)
+            elif op in {"COPY", "ADD"}:
+                copy(source, root, cwd, value, args | env, ignored, op=op)
             elif op == "RUN":
                 runenv = args | env
                 argv = native_command(value, runenv)
